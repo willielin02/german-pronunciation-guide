@@ -325,8 +325,8 @@
   <div class="voice-picker">
     <span>聲音</span>
     <select id="ttsSelect">
-      <option value="katja">Katja（女）</option>
       <option value="amala">Amala（女）</option>
+      <option value="katja">Katja（女）</option>
       <option value="seraphina">Seraphina（女・多語）</option>
       <option value="conrad">Conrad（男）</option>
       <option value="florian">Florian（男・多語）</option>
@@ -751,8 +751,8 @@
   const TTS_KEY = 'de-guide-tts';
   const ttsSelect = document.getElementById('ttsSelect');
   const TTS_NAMES = { katja: 'Katja', amala: 'Amala', seraphina: 'Seraphina', conrad: 'Conrad', florian: 'Florian', killian: 'Killian' };
-  let ttsVoice = (() => { try { return localStorage.getItem(TTS_KEY) || 'katja'; } catch (e) { return 'katja'; } })();
-  if (!TTS_NAMES[ttsVoice]) ttsVoice = 'katja';
+  let ttsVoice = (() => { try { return localStorage.getItem(TTS_KEY) || 'amala'; } catch (e) { return 'amala'; } })();
+  if (!TTS_NAMES[ttsVoice]) ttsVoice = 'amala';
   ttsSelect.value = ttsVoice;
   function audioDir() { return 'audio/' + ttsVoice + '/'; }
   const audioCache = new Map();
