@@ -322,6 +322,17 @@
     <span class="speed-val" id="speedVal">1.0x</span>
     <span class="speed-hint" id="speedHint"></span>
   </div>
+  <div class="voice-picker">
+    <span>聲音</span>
+    <select id="ttsSelect">
+      <option value="katja">Katja（女）</option>
+      <option value="amala">Amala（女）</option>
+      <option value="seraphina">Seraphina（女・多語）</option>
+      <option value="conrad">Conrad（男）</option>
+      <option value="florian">Florian（男・多語）</option>
+      <option value="killian">Killian（男）</option>
+    </select>
+  </div>
   <div class="voice-picker" id="voicePicker" hidden>
     <span>備援語音</span>
     <select id="voiceSelect"><option value="">自動</option></select>
@@ -737,7 +748,13 @@
   // 所以全部單字預先用 Microsoft 神經語音（de-DE-KatjaNeural）合成成 mp3 放在 audio/，
   // 任何裝置聽到的都是同一份聲音；語速用 playbackRate（保持音高）。
   // 音檔載入失敗才退回瀏覽器語音。
-  const AUDIO_DIR = 'audio/';
+  const TTS_KEY = 'de-guide-tts';
+  const ttsSelect = document.getElementById('ttsSelect');
+  const TTS_NAMES = { katja: 'Katja', amala: 'Amala', seraphina: 'Seraphina', conrad: 'Conrad', florian: 'Florian', killian: 'Killian' };
+  let ttsVoice = (() => { try { return localStorage.getItem(TTS_KEY) || 'katja'; } catch (e) { return 'katja'; } })();
+  if (!TTS_NAMES[ttsVoice]) ttsVoice = 'katja';
+  ttsSelect.value = ttsVoice;
+  function audioDir() { return 'audio/' + ttsVoice + '/'; }
   const audioCache = new Map();
   let current = null;
   const pickerEl = document.getElementById('voicePicker');
@@ -756,14 +773,14 @@
     }
     statusEl.classList.add('ready');
     statusEl.classList.remove('no-voice');
-    labelEl.textContent = '語音就緒：Katja（神經語音音檔）';
+    labelEl.textContent = '語音就緒：' + TTS_NAMES[ttsVoice] + '（神經語音音檔）';
   }
 
   function getAudio(text) {
-    const k = slug(text);
+    const k = ttsVoice + '/' + slug(text);
     let a = audioCache.get(k);
     if (!a) {
-      a = new Audio(AUDIO_DIR + k + '.mp3');
+      a = new Audio(audioDir() + slug(text) + '.mp3');
       a.preload = 'auto';
       audioCache.set(k, a);
     }
@@ -808,7 +825,14 @@
   slider.addEventListener('input', () => { if (current) applyRate(current.audio); });
 
   // 開頁就先確認音檔拿得到（一個小檔），拿不到就直接顯示備援語音選單
-  fetch(AUDIO_DIR + 'ja.mp3', { method: 'HEAD' })
+  ttsSelect.addEventListener('change', () => {
+    ttsVoice = ttsSelect.value;
+    try { localStorage.setItem(TTS_KEY, ttsVoice); } catch (e) {}
+    stopCurrent();
+    setAudioStatus();
+  });
+
+  fetch(audioDir() + 'ja.mp3', { method: 'HEAD' })
     .then(r => { if (!r.ok) throw 0; setAudioStatus(); })
     .catch(() => { audioBroken = true; setAudioStatus(); });
 
