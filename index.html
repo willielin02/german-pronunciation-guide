@@ -270,6 +270,39 @@
     font-weight: 600;
     min-width: 2rem;
   }
+
+  .speed-hint {
+    color: #6b6f83;
+    font-size: 0.75rem;
+  }
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin-bottom: 2rem;
+  }
+  .controls .speed-control { margin-bottom: 0; }
+  .voice-picker {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.6rem 0.9rem;
+    background: #161825;
+    border: 1px solid #2a2d42;
+    border-radius: 8px;
+    font-size: 0.82rem;
+    color: #8b8fa3;
+    max-width: 100%;
+  }
+  .voice-picker select {
+    background: #0f1117;
+    color: #e2e4e9;
+    border: 1px solid #2a2d42;
+    border-radius: 6px;
+    padding: 0.3rem 0.5rem;
+    font-size: 0.82rem;
+    max-width: 240px;
+  }
 </style>
 </head>
 <body>
@@ -282,10 +315,17 @@
   <span id="voiceLabel">偵測語音引擎中…</span>
 </div>
 
-<div class="speed-control">
-  <span>語速</span>
-  <input type="range" id="speedSlider" min="0.3" max="1.2" step="0.1" value="0.7">
-  <span class="speed-val" id="speedVal">0.7x</span>
+<div class="controls">
+  <div class="speed-control">
+    <span>語速</span>
+    <input type="range" id="speedSlider" min="0.5" max="1.2" step="0.05" value="1">
+    <span class="speed-val" id="speedVal">1.0x</span>
+    <span class="speed-hint" id="speedHint"></span>
+  </div>
+  <div class="voice-picker">
+    <span>語音</span>
+    <select id="voiceSelect"><option value="">自動</option></select>
+  </div>
 </div>
 
 <!-- ============ 0. 核心觀念 ============ -->
@@ -597,26 +637,69 @@
 <p class="footer-note">規則就這些。德文沒有例外地獄，學完這頁你就能朗讀任何德文。</p>
 
 <script>
-  // Speech synthesis setup
+  // ---------- Speech synthesis ----------
+  // 手機上的失真主因：①離線 Compact 語音品質低 ②rate < 1 是用時間拉伸做的。
+  // 對策：預設 1.0、下限 0.5、挑聲音時以品質為先（不再本機優先）、可手動選聲音並記住。
+  const STORAGE_KEY = 'de-guide-voice';
   let deVoice = null;
-  let speechRate = 0.7;
+  let speechRate = 1.0;
+  let userPickedVoice = (() => { try { return localStorage.getItem(STORAGE_KEY) || ''; } catch (e) { return ''; } })();
 
   const statusEl = document.getElementById('voiceStatus');
   const labelEl = document.getElementById('voiceLabel');
   const slider = document.getElementById('speedSlider');
   const speedVal = document.getElementById('speedVal');
+  const speedHint = document.getElementById('speedHint');
+  const voiceSelect = document.getElementById('voiceSelect');
 
+  function updateSpeedUI() {
+    speedVal.textContent = speechRate.toFixed(2).replace(/0$/, '') + 'x';
+    speedHint.textContent = speechRate < 0.8 ? '（太慢時手機語音可能失真）' : '';
+  }
   slider.addEventListener('input', () => {
     speechRate = parseFloat(slider.value);
-    speedVal.textContent = speechRate.toFixed(1) + 'x';
+    updateSpeedUI();
   });
+  updateSpeedUI();
 
-  function findGermanVoice() {
-    const voices = speechSynthesis.getVoices();
-    // Prefer native German voices
-    deVoice = voices.find(v => v.lang.startsWith('de') && v.localService) ||
-              voices.find(v => v.lang.startsWith('de')) ||
-              null;
+  // 品質評分：名字帶 Enhanced/Premium/Natural/Neural/Online 的加分，Compact/eSpeak 扣分，
+  // 網路語音通常比手機的離線包好，所以本機不再加分。
+  function voiceScore(v) {
+    const n = (v.name || '').toLowerCase();
+    let sc = 0;
+    if (/^de[-_]de/i.test(v.lang)) sc += 30; else if (/^de/i.test(v.lang)) sc += 20; else return -1;
+    if (/premium|enhanced|natural|neural|online|wavenet|google/.test(n)) sc += 15;
+    if (/siri/.test(n)) sc += 5;
+    if (/compact|espeak|pico|android/.test(n)) sc -= 20;
+    if (!v.localService) sc += 3;
+    return sc;
+  }
+
+  function germanVoices() {
+    return speechSynthesis.getVoices()
+      .filter(v => voiceScore(v) >= 0)
+      .sort((a, b) => voiceScore(b) - voiceScore(a));
+  }
+
+  function voiceId(v) { return v.voiceURI + '|' + v.name; }
+
+  function refreshVoices() {
+    const list = germanVoices();
+
+    // rebuild picker
+    const prev = voiceSelect.value;
+    voiceSelect.innerHTML = '<option value="">自動</option>';
+    list.forEach(v => {
+      const o = document.createElement('option');
+      o.value = voiceId(v);
+      o.textContent = v.name + (v.localService ? '' : '（線上）');
+      voiceSelect.appendChild(o);
+    });
+    const want = userPickedVoice || prev;
+    if (want && list.some(v => voiceId(v) === want)) voiceSelect.value = want;
+
+    const picked = list.find(v => voiceId(v) === voiceSelect.value);
+    deVoice = picked || list[0] || null;
 
     if (deVoice) {
       statusEl.classList.add('ready');
@@ -625,34 +708,58 @@
     } else {
       statusEl.classList.add('no-voice');
       statusEl.classList.remove('ready');
-      labelEl.textContent = '未找到德文語音（請確認瀏覽器支援）';
+      labelEl.textContent = list.length === 0 && speechSynthesis.getVoices().length === 0
+        ? '偵測語音引擎中…（點任一單字可觸發載入）'
+        : '未找到德文語音（iPhone：設定→輔助使用→朗讀內容→聲音→德文；Android：安裝 Google 語音服務德文包）';
     }
   }
 
-  // Voices may load async
-  speechSynthesis.addEventListener('voiceschanged', findGermanVoice);
-  findGermanVoice();
+  voiceSelect.addEventListener('change', () => {
+    userPickedVoice = voiceSelect.value;
+    try { localStorage.setItem(STORAGE_KEY, userPickedVoice); } catch (e) {}
+    refreshVoices();
+  });
 
-  // Speak function
+  // Voices load async; on iOS they may only appear after a user gesture.
+  if ('speechSynthesis' in window) {
+    speechSynthesis.addEventListener('voiceschanged', refreshVoices);
+    refreshVoices();
+    setTimeout(refreshVoices, 500);
+  } else {
+    statusEl.classList.add('no-voice');
+    labelEl.textContent = '此瀏覽器不支援語音合成';
+  }
+
+  // Speak
+  let speakTimer = null;
   function speakDE(text, el) {
+    if (!('speechSynthesis' in window)) return;
+    if (!deVoice) refreshVoices();
+
+    const wasSpeaking = speechSynthesis.speaking || speechSynthesis.pending;
     speechSynthesis.cancel();
+    clearTimeout(speakTimer);
 
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.lang = 'de-DE';
-    utter.rate = speechRate;
-    utter.pitch = 1;
-    if (deVoice) utter.voice = deVoice;
+    const go = () => {
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.lang = deVoice ? deVoice.lang : 'de-DE';
+      utter.rate = speechRate;
+      utter.pitch = 1;
+      utter.volume = 1;
+      if (deVoice) utter.voice = deVoice;
 
-    if (el) {
-      el.classList.add('speaking');
-      utter.onend = () => el.classList.remove('speaking');
-      utter.onerror = () => el.classList.remove('speaking');
-    }
-
-    speechSynthesis.speak(utter);
+      if (el) {
+        document.querySelectorAll('.speak.speaking').forEach(x => x.classList.remove('speaking'));
+        el.classList.add('speaking');
+        utter.onend = () => el.classList.remove('speaking');
+        utter.onerror = () => el.classList.remove('speaking');
+      }
+      speechSynthesis.speak(utter);
+    };
+    // Android/Chrome: cancel() 緊接 speak() 會吃掉開頭；正在播放時延遲一小段再說。
+    speakTimer = setTimeout(go, wasSpeaking ? 120 : 0);
   }
 
-  // Attach click handlers to all .speak elements
   document.querySelectorAll('.speak').forEach(el => {
     el.addEventListener('click', (e) => {
       e.preventDefault();
