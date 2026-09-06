@@ -773,15 +773,19 @@
     }
     statusEl.classList.add('ready');
     statusEl.classList.remove('no-voice');
-    labelEl.textContent = '語音就緒：' + TTS_NAMES[ttsVoice] + '（神經語音音檔）';
+    const pf = prefetchState.get(ttsVoice);
+    const tail = (pf && pf.done < pf.total) ? '（載入中 ' + pf.done + '/' + pf.total + '）' : '（神經語音音檔）';
+    labelEl.textContent = '語音就緒：' + TTS_NAMES[ttsVoice] + tail;
   }
 
   function getAudio(text) {
     const k = ttsVoice + '/' + slug(text);
     let a = audioCache.get(k);
     if (!a) {
-      a = new Audio(audioDir() + slug(text) + '.mp3');
+      // 記憶體裡已有就用 blob URL（零網路、iPhone 也不會等下載），否則退回直接抓網址
+      a = new Audio(blobUrls.get(k) || (audioDir() + slug(text) + '.mp3'));
       a.preload = 'auto';
+      a.load();
       audioCache.set(k, a);
     }
     return a;
@@ -825,15 +829,47 @@
   slider.addEventListener('input', () => { if (current) applyRate(current.audio); });
 
   // 開頁就先確認音檔拿得到（一個小檔），拿不到就直接顯示備援語音選單
+  // ---------- 開頁預先把整組音檔抓進記憶體 ----------
+  // 症狀：點下去停一兩秒才出聲＝那一刻才開始下載；iPhone Safari 還會忽略媒體預載。
+  // 對策：用 fetch 把當前聲音的全部檔案抓成 blob（媒體預載會被擋、一般下載不會），
+  // 播放器直接吃 blob URL。換聲音就抓那一組。
+  const blobUrls = new Map();       // 'voice/slug' -> object URL
+  const prefetchState = new Map();  // voice -> {done,total}
+  const ALL_WORDS = [...new Set([...document.querySelectorAll('.speak')].map(el => el.getAttribute('data-de') || el.textContent))];
+
+  function prefetchVoice(v) {
+    if (prefetchState.has(v)) return;
+    const st = { done: 0, total: ALL_WORDS.length };
+    prefetchState.set(v, st);
+    const queue = ALL_WORDS.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const w = queue.shift();
+        const k = v + '/' + slug(w);
+        try {
+          const r = await fetch('audio/' + v + '/' + slug(w) + '.mp3');
+          if (r.ok) {
+            const b = await r.blob();
+            if (!blobUrls.has(k)) blobUrls.set(k, URL.createObjectURL(b));
+          }
+        } catch (e) {}
+        st.done++;
+        if (v === ttsVoice && !audioBroken && (st.done % 8 === 0 || st.done === st.total)) setAudioStatus();
+      }
+    };
+    Promise.all([worker(), worker(), worker(), worker(), worker(), worker()]);
+  }
+
   ttsSelect.addEventListener('change', () => {
     ttsVoice = ttsSelect.value;
+    prefetchVoice(ttsVoice);
     try { localStorage.setItem(TTS_KEY, ttsVoice); } catch (e) {}
     stopCurrent();
     setAudioStatus();
   });
 
   fetch(audioDir() + 'ja.mp3', { method: 'HEAD' })
-    .then(r => { if (!r.ok) throw 0; setAudioStatus(); })
+    .then(r => { if (!r.ok) throw 0; prefetchVoice(ttsVoice); setAudioStatus(); })
     .catch(() => { audioBroken = true; setAudioStatus(); });
 
   // ---------- 瀏覽器語音（備援） ----------
