@@ -312,7 +312,7 @@
 
 <div class="voice-status" id="voiceStatus">
   <span class="dot"></span>
-  <span id="voiceLabel">偵測語音引擎中…</span>
+  <span id="voiceLabel">載入語音中…</span>
 </div>
 
 <div class="controls">
@@ -322,8 +322,8 @@
     <span class="speed-val" id="speedVal">1.0x</span>
     <span class="speed-hint" id="speedHint"></span>
   </div>
-  <div class="voice-picker">
-    <span>語音</span>
+  <div class="voice-picker" id="voicePicker" hidden>
+    <span>備援語音</span>
     <select id="voiceSelect"><option value="">自動</option></select>
   </div>
 </div>
@@ -641,6 +641,7 @@
   // 手機上的失真主因：①離線 Compact 語音品質低 ②rate < 1 是用時間拉伸做的。
   // 對策：預設 1.0、下限 0.5、挑聲音時以品質為先（不再本機優先）、可手動選聲音並記住。
   const STORAGE_KEY = 'de-guide-voice';
+  let audioBroken = false; // 音檔拿不到才退回瀏覽器語音
   let deVoice = null;
   let speechRate = 1.0;
   let userPickedVoice = (() => { try { return localStorage.getItem(STORAGE_KEY) || ''; } catch (e) { return ''; } })();
@@ -654,7 +655,7 @@
 
   function updateSpeedUI() {
     speedVal.textContent = speechRate.toFixed(2).replace(/0$/, '') + 'x';
-    speedHint.textContent = speechRate < 0.8 ? '（太慢時手機語音可能失真）' : '';
+    speedHint.textContent = '';
   }
   slider.addEventListener('input', () => {
     speechRate = parseFloat(slider.value);
@@ -684,6 +685,7 @@
   function voiceId(v) { return v.voiceURI + '|' + v.name; }
 
   function refreshVoices() {
+    if (!audioBroken) return;
     const list = germanVoices();
 
     // rebuild picker
@@ -730,9 +732,89 @@
     labelEl.textContent = '此瀏覽器不支援語音合成';
   }
 
-  // Speak
+  // ---------- 音檔優先播放 ----------
+  // 手機的內建語音（Compact 離線包）本身就糊，rate=1.0 也一樣。
+  // 所以全部單字預先用 Microsoft 神經語音（de-DE-KatjaNeural）合成成 mp3 放在 audio/，
+  // 任何裝置聽到的都是同一份聲音；語速用 playbackRate（保持音高）。
+  // 音檔載入失敗才退回瀏覽器語音。
+  const AUDIO_DIR = 'audio/';
+  const audioCache = new Map();
+  let current = null;
+  const pickerEl = document.getElementById('voicePicker');
+
+  function slug(t) {
+    return t.toLowerCase()
+      .replace(/ä/g, 'ae').replace(/ö/g, 'oe').replace(/ü/g, 'ue').replace(/ß/g, 'ss')
+      .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  }
+
+  function setAudioStatus() {
+    if (audioBroken) {
+      pickerEl.hidden = false;
+      refreshVoices();
+      return;
+    }
+    statusEl.classList.add('ready');
+    statusEl.classList.remove('no-voice');
+    labelEl.textContent = '語音就緒：Katja（神經語音音檔）';
+  }
+
+  function getAudio(text) {
+    const k = slug(text);
+    let a = audioCache.get(k);
+    if (!a) {
+      a = new Audio(AUDIO_DIR + k + '.mp3');
+      a.preload = 'auto';
+      audioCache.set(k, a);
+    }
+    return a;
+  }
+
+  function applyRate(a) {
+    a.playbackRate = speechRate;
+    if ('preservesPitch' in a) a.preservesPitch = true;
+    if ('mozPreservesPitch' in a) a.mozPreservesPitch = true;
+    if ('webkitPreservesPitch' in a) a.webkitPreservesPitch = true;
+  }
+
+  function stopCurrent() {
+    if (current) {
+      current.audio.pause();
+      current.audio.currentTime = 0;
+      current.el && current.el.classList.remove('speaking');
+      current = null;
+    }
+    if ('speechSynthesis' in window) speechSynthesis.cancel();
+  }
+
+  function playFile(text, el) {
+    const a = getAudio(text);
+    stopCurrent();
+    applyRate(a);
+    if (el) el.classList.add('speaking');
+    current = { audio: a, el };
+    const done = () => { if (current && current.audio === a) { el && el.classList.remove('speaking'); current = null; } };
+    a.onended = done;
+    a.onerror = () => { done(); audioBroken = true; setAudioStatus(); speakBrowser(text, el); };
+    const pr = a.play();
+    if (pr && pr.catch) pr.catch(err => {
+      done();
+      if (err && err.name === 'NotSupportedError') { audioBroken = true; setAudioStatus(); }
+      speakBrowser(text, el);
+    });
+  }
+
+  // 語速改變時，正在播的那個也跟著變
+  slider.addEventListener('input', () => { if (current) applyRate(current.audio); });
+
+  // 開頁就先確認音檔拿得到（一個小檔），拿不到就直接顯示備援語音選單
+  fetch(AUDIO_DIR + 'ja.mp3', { method: 'HEAD' })
+    .then(r => { if (!r.ok) throw 0; setAudioStatus(); })
+    .catch(() => { audioBroken = true; setAudioStatus(); });
+
+  // ---------- 瀏覽器語音（備援） ----------
   let speakTimer = null;
-  function speakDE(text, el) {
+  function speakBrowser(text, el) {
     if (!('speechSynthesis' in window)) return;
     if (!deVoice) refreshVoices();
 
@@ -758,6 +840,11 @@
     };
     // Android/Chrome: cancel() 緊接 speak() 會吃掉開頭；正在播放時延遲一小段再說。
     speakTimer = setTimeout(go, wasSpeaking ? 120 : 0);
+  }
+
+  function speakDE(text, el) {
+    if (audioBroken) speakBrowser(text, el);
+    else playFile(text, el);
   }
 
   document.querySelectorAll('.speak').forEach(el => {
